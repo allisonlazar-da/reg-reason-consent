@@ -1,0 +1,6 @@
+name: reg-reason-consent
+channels:
+  - snowflake
+dependencies:
+  - plotly
+  - pandas

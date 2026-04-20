@@ -1,0 +1,7 @@
+definition_version: 1
+streamlit:
+  name: reg_reason_consent
+  stage: reg_reason_consent_stage
+  query_warehouse: BUSINESS_USER_WH
+  main_file: app_sis.py
+  env_file: environment.yml
