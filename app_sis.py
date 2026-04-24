@@ -421,30 +421,6 @@ FROM NICHE_DATA_HUB.RAT.REG_CONSENT
 | % Full Reg | `SUM(Full Reg) / SUM(USER_ACCOUNTS)` |
 | % Full Consent | `SUM(Full Consent) / SUM(Full Reg)` |
 
-### Filters
-
-**Global** (apply to every view, collapsed by default):
-- **🎓 Match College App Analytics scope** — toggle that reconciles KPIs
-  with the *College App Analytics* Tableau workbook by applying every
-  row-level predicate that workbook bakes into its custom SQL:
-  `USER_TYPE ∈ {hsstudent, adult, college, transfer}` (drops `other` + NULL) ·
-  `REG_START_PLATFORM` excludes `Old App` + NULL ·
-  `CONSENT_STATUS` / `REG_STATUS` / `APP_OPERATING_SYSTEM` exclude NULL ·
-  `ACCOUNT_CREATION_DATE ∈ [2023-01-25, 2025-09-01]`. Leave OFF for the
-  broader Reg Reason & Consent scope (this workbook's default).
-- **User Type** — multiselect
-- **Consent Status** — multiselect
-- **Reg Start Platform** — multiselect (default excludes `Old App` + NULL, matching Tableau)
-- **Grouped Reg Reason** — multiselect (default excludes `Undefined` + NULL, matching Tableau)
-- **App Operating System** — multiselect
-- **Reg Page Path** — substring search (case-insensitive)
-- **Account Creation Date** — range picker (preset dropdown: Last 7/30/90 days, Last 6/12 months, MTD, QTD, YTD, All time, Custom)
-- **Chart granularity** — Daily / Weekly / Monthly (applied to all time charts)
-
-**Parameter** (Tableau `Plot Name`):
-- Radio toggle: `Full Reg Trends` ↔ `Full Consent Trends` — switches which
-  line chart renders in Row 2.
-
 ### Colors
 
 Tableau workbook colors preserved exactly:
@@ -523,7 +499,7 @@ if use_rr_defaults:
 else:
     df_base = df_all.copy()
 
-with st.expander("🔧 Filters", expanded=True):
+with st.expander("🔧 Filters", expanded=False):
     # ── College App Analytics scope — applies the preset by populating
     # the actual widget values so users can add/remove individual
     # members afterwards. The checkbox itself is a one-shot "apply"
@@ -1311,11 +1287,53 @@ with tab_trends:
                 st.info("Pick a Split by dimension to see the All-Time composition.")
                 st.stop()
             if is_rate:
-                st.warning(
-                    f"Rate metrics like {metric_label} don't sum, so a composition "
-                    "donut isn't meaningful. Pick a volume metric "
-                    "(Accts Created / Full Registrations / Fully-Consenting) to "
-                    "see the All-Time breakdown."
+                # For rate metrics, a donut doesn't apply — rates don't sum.
+                # Show a plain table: the rate computed over the full period
+                # per dimension value (sum-over-sum, matching how the KPI
+                # tiles compute rates).
+                st.markdown(f"### {metric_label} by {split_label} · All Time")
+
+                rate_rollup = (
+                    df_f.groupby(dim_col, dropna=False, as_index=False)
+                    .agg(USER_ACCOUNTS=("USER_ACCOUNTS", "sum"),
+                         FULL_REG=("FULL_REG", "sum"),
+                         FULL_CONSENT=("FULL_CONSENT", "sum"))
+                )
+                if metric_col == "PCT_FULL_REG":
+                    rate_rollup[metric_label] = rate_rollup.apply(
+                        lambda r: safe_pct(r["FULL_REG"], r["USER_ACCOUNTS"]), axis=1
+                    )
+                else:  # PCT_FULL_CONSENT
+                    rate_rollup[metric_label] = rate_rollup.apply(
+                        lambda r: safe_pct(r["FULL_CONSENT"], r["FULL_REG"]), axis=1
+                    )
+
+                rate_rollup[dim_col] = rate_rollup[dim_col].fillna("(null)").astype(str)
+                rate_rollup = (rate_rollup
+                               .sort_values(metric_label, ascending=False)
+                               .head(int(top_n)))
+
+                disp = rate_rollup[[dim_col, metric_label,
+                                    "USER_ACCOUNTS", "FULL_REG", "FULL_CONSENT"]].copy()
+                disp[metric_label] = disp[metric_label].map(lambda v: f"{v * 100:.1f}%")
+                disp["USER_ACCOUNTS"] = disp["USER_ACCOUNTS"].map(lambda v: f"{int(v):,}")
+                disp["FULL_REG"] = disp["FULL_REG"].map(lambda v: f"{int(v):,}")
+                disp["FULL_CONSENT"] = disp["FULL_CONSENT"].map(lambda v: f"{int(v):,}")
+                disp = disp.rename(columns={
+                    dim_col: split_label,
+                    "USER_ACCOUNTS": "# Accts",
+                    "FULL_REG": "# Full Reg",
+                    "FULL_CONSENT": "# Full Consent",
+                })
+                st.dataframe(disp, use_container_width=True,
+                             height=min(440, 52 + 35 * max(len(disp), 1)))
+
+                st.download_button(
+                    "⬇ CSV",
+                    rate_rollup.rename(columns={dim_col: split_label})
+                        .to_csv(index=False).encode(),
+                    f"reg_consent_all_time_{metric_col.lower()}_by_{split_label.lower()}.csv",
+                    key="dl_alltime_rate",
                 )
                 st.stop()
 
@@ -1463,10 +1481,18 @@ with tab_trends:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        rows_suffix = f" · top {int(top_n)} {split_label.lower()}s" if dim_col else ""
-        st.caption(f"{len(g):,} {trend_gran.lower()} rows · "
+        n_periods = g["PERIOD"].nunique()
+        if dim_col:
+            n_series = g[dim_col].nunique()
+            series_suffix = (
+                f" · {n_series} {split_label.lower()}"
+                + ("s" if n_series != 1 else "")
+            )
+        else:
+            series_suffix = ""
+        st.caption(f"{n_periods:,} {trend_gran.lower()} periods · "
                    f"{pd.to_datetime(g['PERIOD']).min():%Y-%m-%d} → "
-                   f"{pd.to_datetime(g['PERIOD']).max():%Y-%m-%d}{rows_suffix}")
+                   f"{pd.to_datetime(g['PERIOD']).max():%Y-%m-%d}{series_suffix}")
 
         # Download filtered underlying data
         out = g.rename(columns={"VALUE": metric_label}).copy()
